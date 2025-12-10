@@ -1,68 +1,33 @@
 export const config = {
-  api: {
-    bodyParser: false, // ❗ Necesario para multipart/form-data
-  }
+  api: { bodyParser: false }
 };
 
 import formidable from "formidable";
 import fs from "fs";
 
-// Convierte req a FormData en fetch()
-async function convertToFormData(fields, files) {
-  const form = new FormData();
-
-  // Campos normales
-  for (const key in fields) {
-    form.append(key, fields[key]);
-  }
-
-  // Archivos
-  for (const key in files) {
-    const file = files[key];
-
-    // formidable devuelve arrays
-    const f = Array.isArray(file) ? file[0] : file;
-
-    const buffer = fs.readFileSync(f.filepath);
-
-    form.append(
-      key,
-      new Blob([buffer], { type: f.mimetype }),
-      f.originalFilename
-    );
-  }
-
-  return form;
-}
-
 export default async function handler(req, res) {
-  // CORS
+
+  // ----- CORS ------
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // Ruta reconstruida
-  const { path } = req.query;
-  const fullPath = Array.isArray(path) ? path.join("/") : path;
-
+  // 🔥 RUTA EXACTA que llegó al proxy (sin modificar)
   const backendBase = process.env.API_BASE_URL; 
-  const targetUrl = `${backendBase}/${fullPath}`;
+  const targetUrl = backendBase + req.url;
 
   console.log("➡️ Enviando al backend:", targetUrl);
 
   try {
-    let fetchOptions = { method: req.method };
+    const contentType = req.headers["content-type"] || "";
+    const fetchOptions = { method: req.method, headers: {} };
 
-    // --- JSON o multipart ---
+    // -------- JSON o multipart --------
     if (req.method !== "GET" && req.method !== "HEAD") {
-      const contentType = req.headers["content-type"] || "";
-
       if (contentType.includes("multipart/form-data")) {
-        // --- Parsear el formdata ---
         const form = new formidable.IncomingForm({ multiples: true });
-
         const { fields, files } = await new Promise((resolve, reject) => {
           form.parse(req, (err, fields, files) => {
             if (err) reject(err);
@@ -70,24 +35,31 @@ export default async function handler(req, res) {
           });
         });
 
-        fetchOptions.body = await convertToFormData(fields, files);
+        // Convertir a FormData para reenviar
+        const formData = new FormData();
+        Object.keys(fields).forEach(k => formData.append(k, fields[k]));
 
-      } else {
-        // --- JSON normal ---
-        const body = await new Promise(resolve => {
-          let raw = "";
-          req.on("data", chunk => raw += chunk);
-          req.on("end", () => resolve(raw));
+        for (const key in files) {
+          const f = Array.isArray(files[key]) ? files[key][0] : files[key];
+          const buffer = fs.readFileSync(f.filepath);
+          formData.append(key, new Blob([buffer], { type: f.mimetype }), f.originalFilename);
+        }
+
+        fetchOptions.body = formData;
+      }
+      else {
+        const raw = await new Promise(resolve => {
+          let data = "";
+          req.on("data", chunk => data += chunk);
+          req.on("end", () => resolve(data));
         });
 
-        fetchOptions.body = body;
-        fetchOptions.headers = {
-          "Content-Type": "application/json",
-        };
+        fetchOptions.body = raw;
+        fetchOptions.headers["Content-Type"] = "application/json";
       }
     }
 
-    // Hacer proxy
+    // -------- PROXY REQUEST --------
     const backendResponse = await fetch(targetUrl, fetchOptions);
     const text = await backendResponse.text();
 
@@ -96,9 +68,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error("❌ Error:", err);
-    return res.status(500).json({
-      Success: false,
-      Message: "Error en el proxy",
-    });
+    return res.status(500).json({ Success: false, Message: "Error en el proxy" });
   }
 }

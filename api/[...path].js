@@ -48,7 +48,7 @@ export default async function handler(req, res) {
   const fullPath = Array.isArray(path) ? path.join("/") : path;
 
   const backendBase = process.env.API_BASE_URL; 
-  const targetUrl = `${backendBase}/TM_${fullPath}`;
+  const targetUrl = `${backendBase}/${fullPath}`;
 
   console.log("➡️ Enviando al backend:", targetUrl);
 

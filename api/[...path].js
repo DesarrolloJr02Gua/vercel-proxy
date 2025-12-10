@@ -45,7 +45,7 @@ export default async function handler(req, res) {
 
         // ---- 6. Leer respuesta (texto o json) ----
         const text = await response.text();
-        console.log("⬅️ Respuesta backend BODY:", responseText);
+        console.log("⬅️ Respuesta backend BODY:", text);
         // ---- 7. Pasar el tipo de contenido ----
         res.setHeader(
             "Content-Type",

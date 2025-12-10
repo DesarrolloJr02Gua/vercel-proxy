@@ -1,67 +1,104 @@
+export const config = {
+  api: {
+    bodyParser: false, // ❗ Necesario para multipart/form-data
+  }
+};
+
+import formidable from "formidable";
+import fs from "fs";
+
+// Convierte req a FormData en fetch()
+async function convertToFormData(fields, files) {
+  const form = new FormData();
+
+  // Campos normales
+  for (const key in fields) {
+    form.append(key, fields[key]);
+  }
+
+  // Archivos
+  for (const key in files) {
+    const file = files[key];
+
+    // formidable devuelve arrays
+    const f = Array.isArray(file) ? file[0] : file;
+
+    const buffer = fs.readFileSync(f.filepath);
+
+    form.append(
+      key,
+      new Blob([buffer], { type: f.mimetype }),
+      f.originalFilename
+    );
+  }
+
+  return form;
+}
+
 export default async function handler(req, res) {
-    console.log("===== NUEVA PETICIÓN AL PROXY =====");
-    console.log("🔹 Método:", req.method);
-    console.log("🔹 Query.path:", req.query.path);
-    console.log("🔹 Headers recibidos:", req.headers);
-    console.log("🔹 Body recibido:", req.body);
-    // ---- 1. CORS ----
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
-    // Responder preflight (OPTIONS) sin hacer proxy
-    if (req.method === "OPTIONS") {
-        return res.status(200).end();
-    }
+  if (req.method === "OPTIONS") return res.status(200).end();
 
-    // ---- 2. Obtener ruta dinámica ----
-    const { path } = req.query;
-    const fullPath = Array.isArray(path) ? path.join("/") : path;
+  // Ruta reconstruida
+  const { path } = req.query;
+  const fullPath = Array.isArray(path) ? path.join("/") : path;
 
-    // ---- 3. Construir URL del backend ----
-    const backendBase = process.env.API_BASE_URL; 
-    const targetUrl = `${backendBase}/TM_${fullPath}`;
-    
-    console.log("➡️ URL final que enviará el proxy:", targetUrl);
+  const backendBase = process.env.API_BASE_URL; 
+  const targetUrl = `${backendBase}/TM_${fullPath}`;
 
-    try {
-        // ---- 4. Configurar petición ----
-        const options = {
-            method: req.method,
-            headers: {
-                ...req.headers,
-                host: undefined,
-            },
-        };
+  console.log("➡️ Enviando al backend:", targetUrl);
 
-        // Si es POST o PUT, incluir body
-        if (req.method !== "GET" && req.method !== "HEAD") {
-            options.body = req.body ? JSON.stringify(req.body) : undefined;
-            options.headers["Content-Type"] = "application/json";
-        }
+  try {
+    let fetchOptions = { method: req.method };
 
-        // ---- 5. Reenviar petición ----
-        const response = await fetch(targetUrl, options);
+    // --- JSON o multipart ---
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      const contentType = req.headers["content-type"] || "";
 
-        // ---- 6. Leer respuesta (texto o json) ----
-        const text = await response.text();
-        console.log("⬅️ Respuesta backend BODY:", text);
-        // ---- 7. Pasar el tipo de contenido ----
-        res.setHeader(
-            "Content-Type",
-            response.headers.get("content-type") || "application/json"
-        );
+      if (contentType.includes("multipart/form-data")) {
+        // --- Parsear el formdata ---
+        const form = new formidable.IncomingForm({ multiples: true });
 
-        // ---- 8. Devolver al cliente ----
-        return res.status(response.status).send(text);
-
-    } catch (error) {
-        console.error("Proxy error:", error);
-
-        return res.status(500).json({
-            Success: false,
-            Message: "Error en el proxy",
-            value: null
+        const { fields, files } = await new Promise((resolve, reject) => {
+          form.parse(req, (err, fields, files) => {
+            if (err) reject(err);
+            resolve({ fields, files });
+          });
         });
+
+        fetchOptions.body = await convertToFormData(fields, files);
+
+      } else {
+        // --- JSON normal ---
+        const body = await new Promise(resolve => {
+          let raw = "";
+          req.on("data", chunk => raw += chunk);
+          req.on("end", () => resolve(raw));
+        });
+
+        fetchOptions.body = body;
+        fetchOptions.headers = {
+          "Content-Type": "application/json",
+        };
+      }
     }
+
+    // Hacer proxy
+    const backendResponse = await fetch(targetUrl, fetchOptions);
+    const text = await backendResponse.text();
+
+    res.setHeader("Content-Type", backendResponse.headers.get("content-type") || "application/json");
+    return res.status(backendResponse.status).send(text);
+
+  } catch (err) {
+    console.error("❌ Error:", err);
+    return res.status(500).json({
+      Success: false,
+      Message: "Error en el proxy",
+    });
+  }
 }
